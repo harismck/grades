@@ -8,8 +8,10 @@ import smtplib
 from email.mime.text import MIMEText
 import logging
 import random_headers
+from datetime import datetime
+from datetime import timedelta
 
-EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+REQUESTS_EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
 LOGIN = 'https://my2.ism.lt/Account/Login'
 
 # Load settings
@@ -28,31 +30,6 @@ logger.addHandler(handler)
 def main():
     logger.info("Starting the script.")
 
-    # Initialize a requests Session
-    session = requests.Session()
-    session.headers.update(random_headers.get_headers())
-
-    # Find the authentication token
-    while True:
-        try:
-            resp = session.get(LOGIN)
-            if resp.status_code == 200:
-                break
-            else:
-                send_error_email('Non-200 Status Code', resp.status_code)
-                logger.error("NON-200 STATUS CODE: {}".format(resp.status_code))
-                exit(1)
-        except EXCEPTIONS as e:
-            send_error_email('Initial GET Error [Waiting]', e)
-            logger.warning(e)
-            if not wait_for_response(LOGIN):
-                send_error_email('Initial GET Error [Quitting]', e)
-                logger.error(e)
-                exit(1)
-    soup = BeautifulSoup(resp.content.decode('utf-8'), 'html.parser')
-    token = soup.find('input', {'name': '__RequestVerificationToken'})['value']
-    logger.info('Authentication token found')
-
     # Get username and password
     conn = sql.connect('main.db')
     cursor = conn.cursor()
@@ -65,38 +42,30 @@ def main():
     conn.commit()
     conn.close()
 
-    # Login to the website
-    data = {'Username': username,
-            'Password': password,
-            '__RequestVerificationToken': token}
-    try:
-        resp = session.post(LOGIN, data=data)
-    except EXCEPTIONS as e:
-        send_error_email('Initial POST Error [Waiting]', e)
-        logger.warning(e)
-        if not wait_for_response(LOGIN):
-            send_error_email('Initial POST Error [Quitting]', e)
-            logger.error(e)
-            exit(1)
-    finally:
-        logger.info('Successfully logged in')
+    # Get a session object
+    session = get_session(username, password)
 
     # Constantly check for new grades
     logger.info('Checking for grades every {} seconds...'.format(settings['reload_interval']))
     while True:
         try:
             resp = session.get('https://my2.ism.lt/StudentGrades/StudentGradesWidgets/LastGradesList')
+            if resp.status_code == 302:
+                session = get_session(username, password)
+                continue
             if resp.status_code != 200:
                 logger.warning('NON-200 STATUS CODE {}'.format(resp.status_code))
                 send_error_email('NON-200 Grades Reload [Quitting]', resp.status_code)
                 exit(1)
-        except EXCEPTIONS as e:
+        except REQUESTS_EXCEPTIONS as e:
             send_error_email('Grades Reload Error [Waiting]', e)
             logger.warning(e)
             if not wait_for_response(LOGIN):
                 send_error_email('Grades Reload Error [Quitting]', e)
                 logger.error(e)
                 exit(1)
+            session = get_session(username, password)
+            continue
 
         soup = BeautifulSoup(resp.content.decode('utf-8'), 'html.parser')
         current_grades = [i for i in extract_grades(soup)]
@@ -120,6 +89,12 @@ def main():
             conn.close()
 
         time.sleep(settings['reload_interval'])
+        print(datetime.now().hour)
+        print(settings['night_mode_hour'])
+        if datetime.now().hour == settings['night_mode_hour']:
+            logger.info('Resting until {}'.format(datetime.now() + timedelta(hours=settings['night_mode_duration'])))
+            time.sleep(settings['night_mode_duration']*60*60)
+            logger.info('Continuing.')
 
 
 def extract_grades(soup):
@@ -134,6 +109,55 @@ def extract_grades(soup):
             'lecturer': grade[3],
             'assessment': grade[4].split('\n')[0]
         }
+
+
+def get_session(username, password):
+    """ Instantiates a requests session and logs the user into the My2 system. """
+    logger.info('Initializing a session')
+
+    # Initialize a requests Session
+    session = requests.Session()
+    session.headers.update(random_headers.get_headers())
+
+    # Find the authentication token
+    while True:
+        try:
+            resp = session.get(LOGIN)
+            if resp.status_code == 200:
+                break
+            else:
+                send_error_email('Non-200 Status Code', resp.status_code)
+                logger.error("NON-200 STATUS CODE: {}".format(resp.status_code))
+                exit(1)
+        except REQUESTS_EXCEPTIONS as e:
+            send_error_email('Initial GET Error [Waiting]', e)
+            logger.warning(e)
+            if not wait_for_response(LOGIN):
+                send_error_email('Initial GET Error [Quitting]', e)
+                logger.error(e)
+                exit(1)
+    soup = BeautifulSoup(resp.content.decode('utf-8'), 'html.parser')
+    token = soup.find('input', {'name': '__RequestVerificationToken'})['value']
+    logger.info('Authentication token found')
+
+    # Login to the website
+    data = {'Username': username,
+            'Password': password,
+            '__RequestVerificationToken': token}
+    try:
+        session.post(LOGIN, data=data)
+    except REQUESTS_EXCEPTIONS as e:
+        send_error_email('Initial POST Error [Waiting]', e)
+        logger.warning(e)
+        if not wait_for_response(LOGIN):
+            send_error_email('Initial POST Error [Quitting]', e)
+            logger.error(e)
+            exit(1)
+    finally:
+        logger.info('Successfully logged in')
+
+    return session
+
 
 
 def get_old_grades(username):
@@ -209,7 +233,7 @@ def wait_for_response(url):
     while True:
         try:
             requests.get(url)
-        except EXCEPTIONS:
+        except REQUESTS_EXCEPTIONS:
             time.sleep(settings['connection_check_interval'])
         except Exception as e:
             return False
