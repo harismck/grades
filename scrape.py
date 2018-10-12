@@ -70,7 +70,7 @@ def main():
             'Password': password,
             '__RequestVerificationToken': token}
     try:
-        session.post(LOGIN, data=data)
+        resp = session.post(LOGIN, data=data)
     except EXCEPTIONS as e:
         send_error_email('Initial POST Error [Waiting]', e)
         logger.warning(e)
@@ -82,9 +82,14 @@ def main():
         logger.info('Successfully logged in')
 
     # Constantly check for new grades
+    logger.info('Checking for grades every {} seconds...'.format(settings['reload_interval']))
     while True:
         try:
-            resp = session.get('https://my2.ism.lt/StudentGrades/StudentGradesWigets/LastGradesList')
+            resp = session.get('https://my2.ism.lt/StudentGrades/StudentGradesWidgets/LastGradesList')
+            if resp.status_code != 200:
+                logger.warning('NON-200 STATUS CODE {}'.format(resp.status_code))
+                send_error_email('NON-200 Grades Reload [Quitting]', resp.status_code)
+                exit(1)
         except EXCEPTIONS as e:
             send_error_email('Grades Reload Error [Waiting]', e)
             logger.warning(e)
@@ -168,7 +173,7 @@ def send_email(from_, to, msg, subject=''):
         server.login(gmail_user, gmail_password)
         server.sendmail(gmail_user, to, msg.as_string())
     except Exception as e:
-        print(e)
+        logger.error(e)
 
 
 def send_error_email(subject, error):

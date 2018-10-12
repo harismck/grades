@@ -1,4 +1,4 @@
 {
-  "reload_interval": 180,
+  "reload_interval": 300,
   "connection_check_interval": 600
 }
