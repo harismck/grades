@@ -6,7 +6,7 @@ import sqlite3 as sql
 import base64
 import smtplib
 from email.mime.text import MIMEText
-
+import logging
 import random_headers
 
 EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
@@ -16,24 +16,42 @@ LOGIN = 'https://my2.ism.lt/Account/Login'
 with open('settings.json', 'r') as file:
     settings = json.loads(file.read())
 
+# Set up logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.FileHandler('logs.log')
+handler.setLevel(logging.INFO)
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(handler)
+
 
 def main():
+    logger.info("Starting the script.")
 
-    # Find the authentication token
+    # Initialize a requests Session
     session = requests.Session()
     session.headers.update(random_headers.get_headers())
+
+    # Find the authentication token
     while True:
         try:
             resp = session.get(LOGIN)
             if resp.status_code == 200:
                 break
+            else:
+                send_error_email('Non-200 Status Code', resp.status_code)
+                logger.error("NON-200 STATUS CODE: {}".format(resp.status_code))
+                exit(1)
         except EXCEPTIONS as e:
             send_error_email('Initial GET Error [Waiting]', e)
+            logger.warning(e)
             if not wait_for_response(LOGIN):
-                send_error_email('Initial GET Quit', e)
+                send_error_email('Initial GET Error [Quitting]', e)
+                logger.error(e)
                 exit(1)
     soup = BeautifulSoup(resp.content.decode('utf-8'), 'html.parser')
     token = soup.find('input', {'name': '__RequestVerificationToken'})['value']
+    logger.info('Authentication token found')
 
     # Get username and password
     conn = sql.connect('main.db')
@@ -54,19 +72,25 @@ def main():
     try:
         session.post(LOGIN, data=data)
     except EXCEPTIONS as e:
-        send_error_email('Initial Post Error [Waiting]', e)
+        send_error_email('Initial POST Error [Waiting]', e)
+        logger.warning(e)
         if not wait_for_response(LOGIN):
-            send_error_email('Initial Post Quit', e)
+            send_error_email('Initial POST Error [Quitting]', e)
+            logger.error(e)
             exit(1)
+    finally:
+        logger.info('Successfully logged in')
 
-            # Constantly check for new grades
+    # Constantly check for new grades
     while True:
         try:
             resp = session.get('https://my2.ism.lt/StudentGrades/StudentGradesWigets/LastGradesList')
         except EXCEPTIONS as e:
             send_error_email('Grades Reload Error [Waiting]', e)
+            logger.warning(e)
             if not wait_for_response(LOGIN):
-                send_error_email('Grades Reload Quit', e)
+                send_error_email('Grades Reload Error [Quitting]', e)
+                logger.error(e)
                 exit(1)
 
         soup = BeautifulSoup(resp.content.decode('utf-8'), 'html.parser')
@@ -74,10 +98,12 @@ def main():
 
         # Check if there are new grades
         if len(current_grades) > len(get_old_grades(username)):
+            logger.info("Found new grades")
             new_grades = get_new_grades(current_grades, username)
 
             # Send email
             send_email('ISM Grades', '{}@stud.ism.lt'.format(username), grades_body(new_grades))
+            logger.info('Email sent')
 
             # Upload current grades to the database
             conn = sql.connect('main.db')
