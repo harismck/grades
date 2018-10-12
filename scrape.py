@@ -6,26 +6,32 @@ import sqlite3 as sql
 import base64
 import smtplib
 from email.mime.text import MIMEText
-import requests.exceptions as exceptions
 
 import random_headers
 
+EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+LOGIN = 'https://my2.ism.lt/Account/Login'
+
+# Load settings
+with open('settings.json', 'r') as file:
+    settings = json.loads(file.read())
+
 
 def main():
-    EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
-    global settings
-    with open('settings.json', 'r') as file:
-        settings = json.loads(file.read())
 
     # Find the authentication token
     session = requests.Session()
     session.headers.update(random_headers.get_headers())
-    resp = None
-    while not resp:
+    while True:
         try:
-            resp = session.get('https://my2.ism.lt/Account/Login')
-        except EXCEPTIONS:
-            wait_for_response()
+            resp = session.get(LOGIN)
+            if resp.status_code == 200:
+                break
+        except EXCEPTIONS as e:
+            send_error_email('Initial GET Error [Waiting]', e)
+            if not wait_for_response(LOGIN):
+                send_error_email('Initial GET Quit', e)
+                exit(1)
     soup = BeautifulSoup(resp.content.decode('utf-8'), 'html.parser')
     token = soup.find('input', {'name': '__RequestVerificationToken'})['value']
 
@@ -46,21 +52,24 @@ def main():
             'Password': password,
             '__RequestVerificationToken': token}
     try:
-        session.post('https://my2.ism.lt/Account/Login', data=data)
-    except EXCEPTIONS:
-        wait_for_response()
+        session.post(LOGIN, data=data)
+    except EXCEPTIONS as e:
+        send_error_email('Initial Post Error [Waiting]', e)
+        if not wait_for_response(LOGIN):
+            send_error_email('Initial Post Quit', e)
+            exit(1)
 
-    # Constantly check for new grades
+            # Constantly check for new grades
     while True:
         try:
             resp = session.get('https://my2.ism.lt/StudentGrades/StudentGradesWigets/LastGradesList')
-            print(resp.status_code)
-        except EXCEPTIONS:
-            wait_for_response()
+        except EXCEPTIONS as e:
+            send_error_email('Grades Reload Error [Waiting]', e)
+            if not wait_for_response(LOGIN):
+                send_error_email('Grades Reload Quit', e)
+                exit(1)
 
         soup = BeautifulSoup(resp.content.decode('utf-8'), 'html.parser')
-        if not soup.find('tr', {'class': 'lastGradeRow'}):
-            print('no')
         current_grades = [i for i in extract_grades(soup)]
 
         # Check if there are new grades
@@ -68,17 +77,19 @@ def main():
             new_grades = get_new_grades(current_grades, username)
 
             # Send email
-            send_updates(new_grades, username)
+            send_email('ISM Grades', '{}@stud.ism.lt'.format(username), grades_body(new_grades))
 
             # Upload current grades to the database
             conn = sql.connect('main.db')
             cursor = conn.cursor()
             cursor.execute('DELETE FROM grades')
-            cursor.executemany('INSERT INTO grades VALUES (?, ?, ?, ?, ?, ?)', [[username] + list(i.values()) for i in current_grades])
+            cursor.executemany('INSERT INTO grades VALUES (?, ?, ?, ?, ?, ?)',
+                               [[username] + list(i.values()) for i in current_grades])
             conn.commit()
             conn.close()
 
         time.sleep(settings['reload_interval'])
+
 
 def extract_grades(soup):
     """ Parses the grades page source code. """
@@ -99,7 +110,7 @@ def get_old_grades(username):
 
     conn = sql.connect('main.db')
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM grades WHERE username = ?", (username, ))
+    cursor.execute("SELECT * FROM grades WHERE username = ?", (username,))
     grades_old = cursor.fetchall()
     conn.close()
 
@@ -112,53 +123,68 @@ def get_new_grades(grades, username):
     return [grade for grade in grades if grade['unid'] not in [i[1] for i in get_old_grades(username)]]
 
 
-def send_updates(grades, username):
-    user_email = '{}@stud.ism.lt'.format(username)
+def send_email(from_, to, msg, subject=''):
+    """ Sends an email to the specified address. """
+
     gmail_user = 'my2.ism@gmail.com'
-    gmail_password = 'my2grades'
+    with open('password') as file:
+        gmail_password = base64.b64decode(file.readline()).decode('utf-8')
 
-    if len(grades) == 1:
-        grades = grades[0]
+    if not isinstance(msg, MIMEText):
+        msg = MIMEText(msg)
+        msg['Suject'] = subject
+    msg['From'] = from_
+    msg['To'] = to
 
-        email_text = "You got a grade of {grade} from {subject} {assignment}.".format(grade=grades['assessment'],
-                                                                                      subject=grades['course'],
-                                                                                      assignment=grades['type'])
-
-        msg = MIMEText(email_text)
-        msg['Subject'] = '{grade} from {subject}'.format(grade=grades['assessment'], subject=grades['course'])
-
-    else:
-        email_text = ''
-        for grade in grades:
-            grade_string = '{grade} from {subject} {assignment}'.format(grade=grade['assessment'], subject=grade['course'],
-                                                                        assignment=grade['type'])
-
-            email_text = '{}\n{}'.format(email_text, grade_string).strip()
-
-        msg = MIMEText(email_text)
-        msg['Subject'] = 'New Grades'
-
-    msg['From'] = 'ISM Grades'
-    msg['To'] = user_email
     try:
         server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
         server.ehlo()
         server.login(gmail_user, gmail_password)
-        server.sendmail(gmail_user, user_email, msg.as_string())
+        server.sendmail(gmail_user, to, msg.as_string())
     except Exception as e:
         print(e)
 
 
-def wait_for_response():
-    print('wait')
+def send_error_email(subject, error):
+    send_email('ISM Error', 'haroldas.mackevicius@outlook.com', error, subject)
+
+
+def grades_body(grades):
+    """ Takes an array with new grades as input and returns a MIMEText object. """
+
+    if len(grades) == 1:
+        subject = '{grade} from {subject}'.format(grade=grades[0]['assessment'], subject=grades[0]['course'])
+        body = "You got a grade of {grade} from {subject} {assignment}.".format(grade=grades[0]['assessment'],
+                                                                                subject=grades[0]['course'],
+                                                                                assignment=grades[0]['type'])
+    else:
+        subject = 'New Grades'
+        body = ''
+        for grade in grades:
+            body = '{}\n{}'.format(body, '{grade} from {subject} {assignment}'.format(grade=grade['assessment'],
+                                                                                      subject=grade['course'],
+                                                                                      assignment=grade['type'])
+                                   ).strip()
+
+    msg = MIMEText(body)
+    msg['Subject'] = subject
+
+    return msg
+
+
+def wait_for_response(url):
+    """ Makes requests to a given url until it starts to respond. """
+
     while True:
         try:
-            resp = requests.get('https://my2.ism.lt/Account/Login')
-        except Exception:
-            print('waiting')
+            requests.get(url)
+        except EXCEPTIONS:
             time.sleep(settings['connection_check_interval'])
+        except Exception as e:
+            return False
         else:
-            break
+            return True
+
 
 if __name__ == '__main__':
     main()
