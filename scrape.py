@@ -10,13 +10,14 @@ import logging
 import random_headers
 from datetime import datetime
 from datetime import timedelta
+import os
 
 REQUESTS_EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
 LOGIN = 'https://my2.ism.lt/Account/Login'
 
-# Load settings
 with open('settings.json', 'r') as file:
     settings = json.loads(file.read())
+os.chdir(os.path.dirname(os.path.realpath(__file__)))
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -155,7 +156,6 @@ def get_session(username, password):
         logger.info('Successfully logged in')
 
     return session
-
 
 
 def get_old_grades(username):
