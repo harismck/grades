@@ -4,3 +4,4 @@ venv
 .idea
 logs.log
 signup.py
+send_email.py

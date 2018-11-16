@@ -1,6 +1,6 @@
 {
   "reload_interval": 300,
-  "connection_check_interval": 600,
-  "night_mode_hour": 0,
-  "night_mode_duration": 8
+  "retry_interval": 600,
+  "night__hour": 0,
+  "night_duration": 8
 }
