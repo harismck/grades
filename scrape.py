@@ -8,7 +8,6 @@ import logging
 from datetime import datetime
 from datetime import timedelta
 import os
-from pprint import pprint
 
 import send_email
 from My2Session import My2Session
