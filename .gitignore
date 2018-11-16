@@ -6,3 +6,5 @@ logs.log
 signup.py
 send_email.py
 __pycache__
+signup.py
+.gitignore
