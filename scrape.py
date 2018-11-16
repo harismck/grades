@@ -1,34 +1,35 @@
-import requests
 from bs4 import BeautifulSoup
 import json
 import time
 import sqlite3 as sql
 import base64
-import smtplib
 from email.mime.text import MIMEText
 import logging
-import random_headers
 from datetime import datetime
 from datetime import timedelta
 import os
+from pprint import pprint
 
-REQUESTS_EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
-LOGIN = 'https://my2.ism.lt/Account/Login'
+import send_email
+from My2Session import My2Session
 
-with open('settings.json', 'r') as file:
-    settings = json.loads(file.read())
-os.chdir(os.path.dirname(os.path.realpath(__file__)))
-
-# Set up logging
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-handler = logging.FileHandler('logs.log')
-handler.setLevel(logging.INFO)
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-logger.addHandler(handler)
+GRADES_URL = 'https://my2.ism.lt/StudentGrades/StudentGradesWidgets/LastGradesList'
 
 
 def main():
+    # Set up logging
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    handler = logging.FileHandler('logs.log')
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
+
+    # Load settings
+    with open('settings.json', 'r') as file:
+        settings = json.loads(file.read())
+    os.chdir(os.path.dirname(os.path.realpath(__file__)))
+
     logger.info("Starting the script.")
 
     # Get username and password
@@ -44,43 +45,37 @@ def main():
     conn.close()
 
     # Get a session object
-    session = get_session(username, password)
+    session = My2Session(username, password)
+    session.login()
 
     # Constantly check for new grades
-    logger.info('Checking for grades every {} seconds...'.format(settings['reload_interval']))
+    logger.info('Checking for grades every {} seconds.'.format(settings['reload_interval']))
     while True:
-        try:
-            resp = session.get('https://my2.ism.lt/StudentGrades/StudentGradesWidgets/LastGradesList')
-            if resp.status_code == 302:
-                session = get_session(username, password)
+        resp = session.get(GRADES_URL)
+        if resp.status_code != 200:
+            # Re-initialize the session if status code is 500
+            if resp.status_code == 500:
+                logger.warning("500 status code, restarting session. ")
+                session = My2Session(username, password)
+                session.login()
                 continue
-            if resp.status_code != 200:
-                logger.warning('NON-200 STATUS CODE {}'.format(resp.status_code))
-                send_error_email('NON-200 Grades Reload [Quitting]', resp.status_code)
+            else:
+                logger.warning("{} status code, quitting.".format(resp.status_code))
                 exit(1)
-        except REQUESTS_EXCEPTIONS as e:
-            send_error_email('Grades Reload Error [Waiting]', e)
-            logger.warning(e)
-            if not wait_for_response(LOGIN):
-                send_error_email('Grades Reload Error [Quitting]', e)
-                logger.error(e)
-                exit(1)
-            session = get_session(username, password)
-            continue
 
-        soup = BeautifulSoup(resp.content.decode('utf-8'), 'html.parser')
-        current_grades = [i for i in extract_grades(soup)]
 
         # Check if there are new grades
+        soup = BeautifulSoup(resp.content.decode('utf-8'), 'html.parser')
+        current_grades = [i for i in extract_grades(soup)]
         if len(current_grades) > len(get_old_grades(username)):
             logger.info("Found new grades")
             new_grades = get_new_grades(current_grades, username)
 
             # Send email
-            send_email('ISM Grades', '{}@stud.ism.lt'.format(username), grades_body(new_grades))
+            send_email.email('ISM Grades', '{}@stud.ism.lt'.format(username), grades_to_text(new_grades))
             logger.info('Email sent')
 
-            # Upload current grades to the database
+            # Upload new grades to the database
             conn = sql.connect('main.db')
             cursor = conn.cursor()
             cursor.execute('DELETE FROM grades')
@@ -89,15 +84,16 @@ def main():
             conn.commit()
             conn.close()
 
+        # Wait
         time.sleep(settings['reload_interval'])
-        if datetime.now().hour == settings['night_mode_hour']:
+        if datetime.now().hour == settings['night_hour']:
             logger.info('Resting until {}'.format(datetime.now() + timedelta(hours=settings['night_mode_duration'])))
-            time.sleep(settings['night_mode_duration']*60*60)
+            time.sleep(settings['night_duration']*60*60)
             logger.info('Continuing.')
 
 
 def extract_grades(soup):
-    """ Parses the grades page source code. """
+    """ Parses the grades' page source code. """
 
     for grade in soup.find_all('tr', {'class': 'lastGradeRow'}):
         grade = [i.text.strip() for i in grade.find_all('td')]
@@ -108,54 +104,6 @@ def extract_grades(soup):
             'lecturer': grade[3],
             'assessment': grade[4].split('\n')[0]
         }
-
-
-def get_session(username, password):
-    """ Instantiates a requests session and logs the user into the My2 system. """
-    logger.info('Initializing a session')
-
-    # Initialize a requests Session
-    session = requests.Session()
-    session.headers.update(random_headers.get_headers())
-
-    # Find the authentication token
-    while True:
-        try:
-            resp = session.get(LOGIN)
-            if resp.status_code == 200:
-                break
-            else:
-                send_error_email('Non-200 Status Code', resp.status_code)
-                logger.error("NON-200 STATUS CODE: {}".format(resp.status_code))
-                exit(1)
-        except REQUESTS_EXCEPTIONS as e:
-            send_error_email('Initial GET Error [Waiting]', e)
-            logger.warning(e)
-            if not wait_for_response(LOGIN):
-                send_error_email('Initial GET Error [Quitting]', e)
-                logger.error(e)
-                exit(1)
-    soup = BeautifulSoup(resp.content.decode('utf-8'), 'html.parser')
-    token = soup.find('input', {'name': '__RequestVerificationToken'})['value']
-    logger.info('Authentication token found')
-
-    # Login to the website
-    data = {'Username': username,
-            'Password': password,
-            '__RequestVerificationToken': token}
-    try:
-        session.post(LOGIN, data=data)
-    except REQUESTS_EXCEPTIONS as e:
-        send_error_email('Initial POST Error [Waiting]', e)
-        logger.warning(e)
-        if not wait_for_response(LOGIN):
-            send_error_email('Initial POST Error [Quitting]', e)
-            logger.error(e)
-            exit(1)
-    finally:
-        logger.info('Successfully logged in')
-
-    return session
 
 
 def get_old_grades(username):
@@ -176,33 +124,7 @@ def get_new_grades(grades, username):
     return [grade for grade in grades if grade['unid'] not in [i[1] for i in get_old_grades(username)]]
 
 
-def send_email(from_, to, msg, subject=''):
-    """ Sends an email to the specified address. """
-
-    gmail_user = 'my2.ism@gmail.com'
-    with open('password') as file:
-        gmail_password = base64.b64decode(file.readline()).decode('utf-8')
-
-    if not isinstance(msg, MIMEText):
-        msg = MIMEText(msg)
-        msg['Suject'] = subject
-    msg['From'] = from_
-    msg['To'] = to
-
-    try:
-        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
-        server.ehlo()
-        server.login(gmail_user, gmail_password)
-        server.sendmail(gmail_user, to, msg.as_string())
-    except Exception as e:
-        logger.error(e)
-
-
-def send_error_email(subject, error):
-    send_email('ISM Error', 'haroldas.mackevicius@outlook.com', error, subject)
-
-
-def grades_body(grades):
+def grades_to_text(grades):
     """ Takes an array with new grades as input and returns a MIMEText object. """
 
     if len(grades) == 1:
@@ -223,20 +145,6 @@ def grades_body(grades):
     msg['Subject'] = subject
 
     return msg
-
-
-def wait_for_response(url):
-    """ Makes requests to a given url until it starts to respond. """
-
-    while True:
-        try:
-            requests.get(url)
-        except REQUESTS_EXCEPTIONS:
-            time.sleep(settings['connection_check_interval'])
-        except Exception as e:
-            return False
-        else:
-            return True
 
 
 if __name__ == '__main__':
