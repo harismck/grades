@@ -5,3 +5,4 @@ venv
 logs.log
 signup.py
 send_email.py
+__pycache__
