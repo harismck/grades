@@ -3,3 +3,4 @@ password
 venv
 .idea
 logs.log
+signup.py
