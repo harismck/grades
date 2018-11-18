@@ -1,6 +1,6 @@
 {
   "reload_interval": 300,
   "retry_interval": 600,
-  "night__hour": 0,
+  "night_hour": 0,
   "night_duration": 8
 }

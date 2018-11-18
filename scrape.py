@@ -86,7 +86,7 @@ def main():
         # Wait
         time.sleep(settings['reload_interval'])
         if datetime.now().hour == settings['night_hour']:
-            logger.info('Resting until {}'.format(datetime.now() + timedelta(hours=settings['night_mode_duration'])))
+            logger.info('Resting until {}'.format(datetime.now() + timedelta(hours=settings['night_duration'])))
             time.sleep(settings['night_duration']*60*60)
             logger.info('Continuing.')
 
