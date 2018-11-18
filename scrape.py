@@ -62,13 +62,13 @@ def main():
                 logger.warning("{} status code, quitting.".format(resp.status_code))
                 exit(1)
 
-
         # Check if there are new grades
         soup = BeautifulSoup(resp.content.decode('utf-8'), 'html.parser')
         current_grades = [i for i in extract_grades(soup)]
         if len(current_grades) > len(get_old_grades(username)):
             logger.info("Found new grades")
             new_grades = get_new_grades(current_grades, username)
+            print(new_grades)
 
             # Send email
             send_email.email('ISM Grades', '{}@stud.ism.lt'.format(username), grades_to_text(new_grades))
@@ -119,9 +119,11 @@ def get_old_grades(username):
 
 def get_new_grades(grades, username):
     """ Returns new grades, i.e. the difference between old grades and current grades. """
+    new_grades = [grade for grade in grades if grade['unid'] not in [i[1] for i in get_old_grades(username)]]
 
-    return [grade for grade in grades if grade['unid'] not in [i[1] for i in get_old_grades(username)]]
-
+    if len(new_grades) == 0:
+        return grades[:len(grades) - len(get_old_grades(username))]
+    return new_grades
 
 def grades_to_text(grades):
     """ Takes an array with new grades as input and returns a MIMEText object. """
