@@ -48,7 +48,7 @@ class My2Session(requests.Session):
                 resp = super().get(url, **kwargs)
                 if resp.status_code == 200:
                     return resp
-                self.logger.error("Non-200 status code during GET: " + resp.status_code)
+                self.logger.error("Non-200 status code during GET: " + str(resp.status_code))
                 return resp
             except requests.RequestException as e:
                 self.logger.warning("Requests exception during GET: " + str(e))

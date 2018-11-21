@@ -54,7 +54,7 @@ def main():
         if resp.status_code != 200:
             # Re-initialize the session if status code is 500
             if resp.status_code == 500:
-                logger.warning("500 status code, restarting session. ")
+                logger.warning("500 status code, restarting session.")
                 session = My2Session(username, password)
                 session.login()
                 continue
@@ -83,7 +83,7 @@ def main():
             conn.commit()
             conn.close()
 
-        # Wait
+        # Waitl
         time.sleep(settings['reload_interval'])
         if datetime.now().hour == settings['night_hour']:
             logger.info('Resting until {}'.format(datetime.now() + timedelta(hours=settings['night_duration'])))
